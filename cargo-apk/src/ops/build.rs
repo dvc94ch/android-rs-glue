@@ -1,13 +1,16 @@
-mod compile;
+pub mod compile;
 mod targets;
 pub mod tempfile;
-mod util;
+pub mod util;
 
 use self::compile::SharedLibraries;
+use self::util::BuildTarget;
 use crate::config::{AndroidConfig, AndroidTargetConfig};
-use cargo::core::{Target, TargetKind, Workspace};
+use cargo::core::{TargetKind, Workspace};
+use cargo::core::compiler::CompileMode;
 use cargo::util::process_builder::process;
 use cargo::util::CargoResult;
+use cargo::util::command_prelude::{ArgMatchesExt, ProfileChecking};
 use clap::ArgMatches;
 use failure::format_err;
 use std::collections::BTreeMap;
@@ -29,12 +32,18 @@ pub fn build(
     options: &ArgMatches,
 ) -> CargoResult<BuildResult> {
     let root_build_dir = util::get_root_build_directory(workspace, config);
+    let compile_options = options.compile_options(
+        workspace.config(),
+        CompileMode::Build,
+        Some(&workspace),
+        ProfileChecking::Unchecked,
+    )?;
     let shared_libraries =
-        compile::build_shared_libraries(workspace, config, options, &root_build_dir)?;
+        compile::build_shared_libraries(workspace, config, compile_options, &root_build_dir)?;
     build_apks(config, &root_build_dir, shared_libraries)
 }
 
-fn build_apks(
+pub fn build_apks(
     config: &AndroidConfig,
     root_build_dir: &PathBuf,
     shared_libraries: SharedLibraries,
@@ -238,7 +247,7 @@ fn build_manifest(
     path: &Path,
     config: &AndroidConfig,
     target_config: &AndroidTargetConfig,
-    target: &Target,
+    target: &BuildTarget,
 ) -> CargoResult<()> {
     let file = path.join("AndroidManifest.xml");
     let mut file = File::create(&file)?;

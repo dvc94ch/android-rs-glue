@@ -1,14 +1,13 @@
 use super::tempfile::TempFile;
-use super::util;
+use super::util::{self, BuildTarget};
 use crate::config::AndroidBuildTarget;
 use crate::config::AndroidConfig;
 use cargo::core::compiler::Executor;
 use cargo::core::compiler::{CompileKind, CompileMode, CompileTarget};
 use cargo::core::manifest::TargetSourcePath;
 use cargo::core::{PackageId, Target, TargetKind, Workspace};
-use cargo::util::command_prelude::{ArgMatchesExt, ProfileChecking};
+use cargo::ops::CompileOptions;
 use cargo::util::{process, CargoResult, ProcessBuilder};
-use clap::ArgMatches;
 use failure::format_err;
 use multimap::MultiMap;
 use std::ffi::{OsStr, OsString};
@@ -26,19 +25,19 @@ pub struct SharedLibrary {
 }
 
 pub struct SharedLibraries {
-    pub shared_libraries: MultiMap<Target, SharedLibrary>,
+    pub shared_libraries: MultiMap<BuildTarget, SharedLibrary>,
 }
 
 /// For each build target and cargo binary or example target, produce a shared library
 pub fn build_shared_libraries(
     workspace: &Workspace,
     config: &AndroidConfig,
-    options: &ArgMatches,
+    mut options: CompileOptions,
     root_build_dir: &PathBuf,
 ) -> CargoResult<SharedLibraries> {
     let android_native_glue_src_path = write_native_app_glue_src(&root_build_dir)?;
 
-    let shared_libraries: Arc<Mutex<MultiMap<Target, SharedLibrary>>> =
+    let shared_libraries: Arc<Mutex<MultiMap<BuildTarget, SharedLibrary>>> =
         Arc::new(Mutex::new(MultiMap::new()));
     for &build_target in config.build_targets.iter() {
         // Directory that will contain files specific to this build target
@@ -68,13 +67,7 @@ pub fn build_shared_libraries(
         )?;
 
         // Configure compilation options so that we will build the desired build_target
-        let mut opts = options.compile_options(
-            workspace.config(),
-            CompileMode::Build,
-            Some(&workspace),
-            ProfileChecking::Unchecked,
-        )?;
-        opts.build_config.requested_kind =
+        options.build_config.requested_kind =
             CompileKind::Target(CompileTarget::new(build_target.rust_triple())?);
 
         // Create executor
@@ -88,7 +81,7 @@ pub fn build_shared_libraries(
         });
 
         // Compile all targets for the requested build target
-        cargo::ops::compile_with_exec(workspace, &opts, &executor)?;
+        cargo::ops::compile_with_exec(workspace, &options, &executor)?;
     }
 
     // Remove the set of targets from the reference counted mutex
@@ -106,7 +99,7 @@ struct SharedLibraryExecutor {
     build_target: AndroidBuildTarget,
 
     // Shared libraries built by the executor are added to this multimap
-    shared_libraries: Arc<Mutex<MultiMap<Target, SharedLibrary>>>,
+    shared_libraries: Arc<Mutex<MultiMap<BuildTarget, SharedLibrary>>>,
 }
 
 impl<'a> Executor for SharedLibraryExecutor {
@@ -319,7 +312,7 @@ mod cargo_apk_glue_code {
 
             let mut shared_libraries = self.shared_libraries.lock().unwrap();
             shared_libraries.insert(
-                target.clone(),
+                target.into(),
                 SharedLibrary {
                     abi: self.build_target,
                     path: library_path.clone(),
@@ -343,7 +336,7 @@ mod cargo_apk_glue_code {
             if dynamically_links_to_cpp_standard_lib {
                 let cpp_library_path = version_independent_libraries_path.join("libc++_shared.so");
                 shared_libraries.insert(
-                    target.clone(),
+                    target.into(),
                     SharedLibrary {
                         abi: self.build_target,
                         path: cpp_library_path,
